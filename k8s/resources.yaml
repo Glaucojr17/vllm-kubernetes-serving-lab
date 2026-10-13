@@ -1,0 +1,74 @@
+apiVersion: v1
+kind: Namespace
+metadata: { name: llm-lab }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: model-cache }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  annotations: { prometheus.io/scrape: 'true', prometheus.io/path: /metrics, prometheus.io/port: '8000' }
+spec:
+  type: ClusterIP
+  selector: { app: vllm }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: vllm }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: vllm } }
+  template:
+    metadata:
+      labels: { app: vllm }
+      annotations: { prometheus.io/scrape: 'true', prometheus.io/path: /metrics, prometheus.io/port: '8000' }
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: server
+          image: vllm/vllm-openai:v0.11.0
+          imagePullPolicy: IfNotPresent
+          command: [vllm, serve, Qwen/Qwen2.5-0.5B-Instruct]
+          args:
+            - --revision
+            - c89bee90d9f811437d9735454613c35b4a3c4dc8
+            - --served-model-name
+            - qwen-0.5b-lab
+            - --host
+            - 0.0.0.0
+            - --port
+            - '8000'
+            - --max-model-len
+            - '2048'
+            - --gpu-memory-utilization
+            - '0.65'
+          env:
+            - { name: HF_HOME, value: /data/huggingface }
+          ports: [{ name: http, containerPort: 8000 }]
+          volumeMounts: [{ name: model-cache, mountPath: /data }]
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 20
+            failureThreshold: 45
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: '2', memory: 6Gi }
+            limits: { cpu: '4', memory: 12Gi, nvidia.com/gpu: '1' }
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim: { claimName: model-cache }
